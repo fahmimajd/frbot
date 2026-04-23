@@ -1,0 +1,64 @@
+# Binance Funding Rate Arbitrage Bot
+
+Configuration file for the funding rate trading strategy.
+All parameters are configurable without modifying source code.
+
+strategy:
+  funding_threshold_pct: 0.03        # minimum |funding rate| to trade
+  entry_window_start_min: 15         # minutes before settlement
+  entry_window_end_min: 10           # minutes before settlement
+  hard_exit_after_min: 15            # minutes after settlement
+  max_concurrent_trades: 3
+  top_pairs_to_scan: 10
+  min_volume_24h_usdt: 50000000      # $50M minimum liquidity
+
+risk:
+  risk_per_trade_pct: 1.0            # % of equity risked per trade
+  max_leverage: 5
+  take_profit_pct: 0.30
+  stop_loss_pct: 0.20
+  min_rr_ratio: 1.3
+  trailing_stop_activation_pct: 0.15
+  trailing_stop_distance_pct: 0.10
+  daily_max_loss_pct: 3.0
+  session_drawdown_limit_pct: 5.0
+  consecutive_loss_limit: 3
+  margin_buffer_pct: 60.0            # minimum margin to maintain
+
+filters:
+  atr_multiplier_limit: 2.0          # skip if ATR > 2x 30d average
+  max_1h_price_change_pct: 2.0
+  max_spread_multiplier: 3.0
+  max_basis_pct: 0.30
+  ob_imbalance_enabled: true
+  ob_imbalance_short_threshold: 0.8
+  ob_imbalance_long_threshold: 1.2
+
+exchange:
+  api_url: "https://fapi.binance.com"
+  ws_url: "wss://fstream.binance.com"
+  testnet: false                     # SET TRUE FOR TESTING FIRST
+  request_weight_limit: 2400
+  rate_limit_buffer_pct: 20
+
+notifications:
+  telegram_enabled: true
+  telegram_bot_token: "${TELEGRAM_BOT_TOKEN}"
+  telegram_chat_id: "${TELEGRAM_CHAT_ID}"
+  alert_on_trade_open: true
+  alert_on_trade_close: true
+  alert_on_error: true
+  daily_summary_time: "00:05"        # UTC
+
+database:
+  host: "localhost"
+  port: 5432
+  name: "funding_bot"
+  user: "${DB_USER}"
+  password: "${DB_PASSWORD}"
+
+logging:
+  level: "INFO"
+  format: "json"
+  rotation: "daily"
+  retention_days: 30
