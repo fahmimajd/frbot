@@ -28,6 +28,10 @@ coverage.xml
 .env.local
 .env.*
 
+# Local config copies
+funding_bot/src/config
+funding_bot/src/config.yaml
+
 # Docker
 .dockerenv
 Dockerfile*

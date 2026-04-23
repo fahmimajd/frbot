@@ -1,7 +1,7 @@
 # Binance Funding Rate Arbitrage Bot
 
-Configuration file for the funding rate trading strategy.
-All parameters are configurable without modifying source code.
+# Configuration file for the funding rate trading strategy.
+# All parameters are configurable without modifying source code.
 
 strategy:
   funding_threshold_pct: 0.03        # minimum |funding rate| to trade
@@ -37,6 +37,8 @@ filters:
 exchange:
   api_url: "https://fapi.binance.com"
   ws_url: "wss://fstream.binance.com"
+  api_key: "${BINANCE_API_KEY}"
+  api_secret: "${BINANCE_API_SECRET}"
   testnet: false                     # SET TRUE FOR TESTING FIRST
   request_weight_limit: 2400
   rate_limit_buffer_pct: 20

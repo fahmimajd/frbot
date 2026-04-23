@@ -67,7 +67,7 @@ def test_calculate_r_ratio(signal_engine):
     r_ratio = signal_engine.calculate_r_ratio(
         entry_price, tp_price, sl_price, SignalSide.LONG
     )
-    assert r_ratio == 1.5  # 0.30 / 0.20 = 1.5
+    assert r_ratio == pytest.approx(1.5)  # 0.30 / 0.20 = 1.5
     
     # SHORT with same R:R
     tp_price = 99.70   # -0.30%
@@ -75,4 +75,4 @@ def test_calculate_r_ratio(signal_engine):
     r_ratio = signal_engine.calculate_r_ratio(
         entry_price, tp_price, sl_price, SignalSide.SHORT
     )
-    assert r_ratio == 1.5
+    assert r_ratio == pytest.approx(1.5)

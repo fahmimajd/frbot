@@ -22,8 +22,8 @@ class Config:
             config_path: Path to the YAML configuration file.
                         Defaults to config/config.yaml in the project root.
         """
-        # Load environment variables from .env file
-        env_path = Path(__file__).parent / ".env"
+        # Load environment variables from .env file (project root)
+        env_path = Path(__file__).parent.parent / ".env"
         load_dotenv(env_path)
 
         # Load YAML configuration
