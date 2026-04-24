@@ -1,29 +1,72 @@
 """
 Binance REST API client wrapper.
 Handles all REST API interactions with Binance Futures.
+Includes retry logic with exponential backoff and circuit breaker for resilience.
 """
 
+import asyncio
 import hashlib
 import hmac
 import logging
+import time
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlencode
 
 import aiohttp
 from src.config_loader import Config
+from src.resilience import (
+    CircuitBreaker,
+    CircuitBreakerConfig,
+    CircuitBreakerOpen,
+    CircuitState,
+    RetryConfig,
+    RETRY_MODERATE,
+    CIRCUIT_BREAKER_MODERATE,
+)
 
 logger = logging.getLogger(__name__)
 
 
-class BinanceRESTClient:
-    """Async REST API client for Binance Futures."""
+# Custom exceptions for better error handling
+class BinanceAPIError(Exception):
+    """Base exception for Binance API errors."""
+    def __init__(self, message: str, status_code: int = None, response_data: dict = None):
+        super().__init__(message)
+        self.status_code = status_code
+        self.response_data = response_data or {}
 
-    def __init__(self, config: Config):
+
+class BinanceRateLimitError(BinanceAPIError):
+    """Raised when rate limit is exceeded."""
+    pass
+
+
+class BinanceServerError(BinanceAPIError):
+    """Raised for 5xx server errors (retryable)."""
+    pass
+
+
+class BinanceClientError(BinanceAPIError):
+    """Raised for 4xx client errors (not retryable)."""
+    pass
+
+
+class BinanceRESTClient:
+    """Async REST API client for Binance Futures with resilience features."""
+
+    def __init__(
+        self,
+        config: Config,
+        retry_config: Optional[RetryConfig] = None,
+        circuit_breaker_config: Optional[CircuitBreakerConfig] = None,
+    ):
         """
         Initialize the Binance REST client.
 
         Args:
             config: Configuration instance with exchange settings.
+            retry_config: Optional retry configuration (uses RETRY_MODERATE by default).
+            circuit_breaker_config: Optional circuit breaker config (uses CIRCUIT_BREAKER_MODERATE by default).
         """
         self.config = config
         self.api_key = config.get("exchange", "api_key")
@@ -35,6 +78,18 @@ class BinanceRESTClient:
             self.base_url = "https://testnet.binancefuture.com"
 
         self._session: Optional[aiohttp.ClientSession] = None
+        
+        # Initialize resilience components
+        self.retry_config = retry_config or RETRY_MODERATE
+        self.circuit_breaker = CircuitBreaker(
+            circuit_breaker_config or CIRCUIT_BREAKER_MODERATE,
+            name="binance_rest"
+        )
+        
+        # Track request metrics
+        self._request_count = 0
+        self._error_count = 0
+        self._last_error_time: Optional[float] = None
 
     async def _get_session(self) -> aiohttp.ClientSession:
         """Get or create HTTP session."""
@@ -73,22 +128,30 @@ class BinanceRESTClient:
         endpoint: str,
         params: Optional[Dict[str, Any]] = None,
         signed: bool = False,
+        retry_count: int = 0,
     ) -> Dict[str, Any]:
         """
-        Make HTTP request to Binance API.
+        Make HTTP request to Binance API with retry and circuit breaker.
 
         Args:
             method: HTTP method (GET, POST, DELETE).
             endpoint: API endpoint path.
             params: Query parameters.
             signed: Whether to sign the request.
+            retry_count: Current retry attempt (internal use).
 
         Returns:
             JSON response from API.
 
         Raises:
-            Exception: If request fails.
+            BinanceAPIError: If request fails.
+            CircuitBreakerOpen: If circuit breaker is open.
         """
+        # Check circuit breaker state
+        if not await self._check_circuit_breaker():
+            raise CircuitBreakerOpen("Circuit breaker is OPEN for Binance API")
+        
+        self._request_count += 1
         session = await self._get_session()
         url = f"{self.base_url}{endpoint}"
 
@@ -97,8 +160,6 @@ class BinanceRESTClient:
 
         # Add timestamp for signed requests
         if signed:
-            import time
-
             params["timestamp"] = int(time.time() * 1000)
             query_string = urlencode(params)
             signature = self._generate_signature(query_string)
@@ -106,16 +167,129 @@ class BinanceRESTClient:
 
         headers = self._get_headers() if signed else {}
 
-        async with session.request(
-            method, url, params=params, headers=headers
-        ) as response:
-            data = await response.json()
+        try:
+            async with session.request(
+                method, url, params=params, headers=headers, timeout=aiohttp.ClientTimeout(total=30)
+            ) as response:
+                data = await response.json()
 
-            if response.status != 200:
-                logger.error(f"Binance API error: {data}")
-                raise Exception(f"Binance API error: {data}")
+                if response.status != 200:
+                    error_msg = f"Binance API error: {data}"
+                    logger.error(error_msg)
+                    
+                    # Classify error type
+                    if response.status >= 500:
+                        # Server error - retryable
+                        self._error_count += 1
+                        self._last_error_time = time.time()
+                        await self._record_failure()
+                        
+                        # Retry with exponential backoff for server errors
+                        if retry_count < self.retry_config.max_retries:
+                            delay = self._calculate_backoff(retry_count)
+                            logger.warning(f"Server error, retrying in {delay:.2f}s (attempt {retry_count + 1})")
+                            await asyncio.sleep(delay)
+                            return await self._request(method, endpoint, params, signed, retry_count + 1)
+                        
+                        raise BinanceServerError(error_msg, response.status, data)
+                    
+                    elif response.status == 429:
+                        # Rate limit exceeded
+                        self._error_count += 1
+                        self._last_error_time = time.time()
+                        await self._record_failure()
+                        raise BinanceRateLimitError(error_msg, response.status, data)
+                    
+                    else:
+                        # Client error - not retryable
+                        self._error_count += 1
+                        self._last_error_time = time.time()
+                        await self._record_failure()
+                        raise BinanceClientError(error_msg, response.status, data)
 
-            return data
+                # Success - record it
+                await self._record_success()
+                return data
+
+        except aiohttp.ClientError as e:
+            # Network error - retryable
+            self._error_count += 1
+            self._last_error_time = time.time()
+            await self._record_failure()
+            
+            if retry_count < self.retry_config.max_retries:
+                delay = self._calculate_backoff(retry_count)
+                logger.warning(f"Network error: {e}, retrying in {delay:.2f}s (attempt {retry_count + 1})")
+                await asyncio.sleep(delay)
+                return await self._request(method, endpoint, params, signed, retry_count + 1)
+            
+            raise BinanceServerError(f"Network error: {e}", response_data={"error": str(e)})
+        
+        except asyncio.TimeoutError:
+            # Timeout - retryable
+            self._error_count += 1
+            self._last_error_time = time.time()
+            await self._record_failure()
+            
+            if retry_count < self.retry_config.max_retries:
+                delay = self._calculate_backoff(retry_count)
+                logger.warning(f"Request timeout, retrying in {delay:.2f}s (attempt {retry_count + 1})")
+                await asyncio.sleep(delay)
+                return await self._request(method, endpoint, params, signed, retry_count + 1)
+            
+            raise BinanceServerError("Request timeout", response_data={"error": "timeout"})
+
+    def _calculate_backoff(self, retry_count: int) -> float:
+        """
+        Calculate exponential backoff delay with jitter.
+        
+        Args:
+            retry_count: Current retry attempt number.
+            
+        Returns:
+            Delay in seconds.
+        """
+        import random
+        delay = min(
+            self.retry_config.initial_delay * (self.retry_config.exponential_base ** retry_count),
+            self.retry_config.max_delay
+        )
+        if self.retry_config.jitter:
+            delay += random.uniform(0, delay * 0.2)
+        return delay
+
+    async def _check_circuit_breaker(self) -> bool:
+        """Check if circuit breaker allows requests."""
+        cb_state = self.circuit_breaker.state
+        
+        if cb_state == CircuitState.CLOSED:
+            return True
+        elif cb_state == CircuitState.OPEN:
+            # Check if timeout has elapsed
+            if self.circuit_breaker._stats.last_failure_time:
+                elapsed = time.time() - self.circuit_breaker._stats.last_failure_time
+                if elapsed >= self.circuit_breaker.config.timeout:
+                    logger.info("Circuit breaker transitioning to HALF_OPEN")
+                    self.circuit_breaker._state = CircuitState.HALF_OPEN
+                    return True
+            return False
+        else:  # HALF_OPEN
+            # Allow limited requests in half-open state
+            return True
+
+    async def _record_success(self):
+        """Record successful request for circuit breaker."""
+        await self.circuit_breaker.record_success()
+        # Reset error count on success
+        self._error_count = 0
+
+    async def _record_failure(self):
+        """Record failed request for circuit breaker."""
+        await self.circuit_breaker.record_failure()
+        
+        # Check if we should trip the circuit breaker
+        if self._error_count >= self.circuit_breaker.config.failure_threshold:
+            logger.critical(f"Circuit breaker OPENED after {self._error_count} failures")
 
     async def get_funding_rate(self, symbol: str) -> Dict[str, Any]:
         """
@@ -340,3 +514,19 @@ class BinanceRESTClient:
         if symbol:
             params["symbol"] = symbol
         return await self._request("GET", endpoint, params, signed=True)
+
+    def get_health_status(self) -> Dict[str, Any]:
+        """
+        Get client health status for monitoring.
+        
+        Returns:
+            Dictionary with health metrics.
+        """
+        return {
+            "circuit_breaker_state": self.circuit_breaker.state.value,
+            "circuit_breaker_stats": self.circuit_breaker.get_status(),
+            "request_count": self._request_count,
+            "error_count": self._error_count,
+            "last_error_time": self._last_error_time,
+            "is_healthy": self.circuit_breaker.is_closed() and self._error_count < 3,
+        }
