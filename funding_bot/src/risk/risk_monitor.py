@@ -4,7 +4,7 @@ Tracks daily PnL, consecutive losses, and enforces trading halts.
 """
 
 import logging
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Dict, List, Optional
 
 from src.config_loader import Config
@@ -192,9 +192,7 @@ class RiskMonitor:
         """
         self.is_halted = True
         self.halt_reason = reason
-        self.halt_until = datetime.now(timezone.utc).replace(
-            hour=datetime.now(timezone.utc).hour + duration_hours
-        )
+        self.halt_until = datetime.now(timezone.utc) + timedelta(hours=duration_hours)
 
         logger.critical(f"TRADING HALT TRIGGERED: {reason}")
 
