@@ -155,7 +155,7 @@ class DatabaseManager:
             async with self._pool.acquire() as conn:
                 await conn.execute(
                     """
-                    INSERT INTO trades 
+                    INSERT INTO trades
                     (symbol, side, entry_price, quantity, leverage, funding_rate, entry_time, status)
                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                     """,
@@ -194,8 +194,8 @@ class DatabaseManager:
 
                 await conn.execute(
                     """
-                    UPDATE trades 
-                    SET exit_price = $1, pnl_usd = $2, pnl_pct = $3, 
+                    UPDATE trades
+                    SET exit_price = $1, pnl_usd = $2, pnl_pct = $3,
                         fee_paid_usd = $4, exit_time = $5, exit_reason = $6, status = 'CLOSED'
                     WHERE symbol = $7 AND status = 'OPEN'
                     """,
@@ -211,7 +211,8 @@ class DatabaseManager:
             logger.error(f"Error logging trade exit: {e}")
 
     async def log_event(
-        self, level: str, event_type: str, message: str, context: Optional[Dict] = None
+        self, level: str, event_type: str, message: str,
+        context: Optional[Dict] = None
     ):
         """
         Log a system event.
@@ -267,7 +268,7 @@ class DatabaseManager:
             async with self._pool.acquire() as conn:
                 await conn.execute(
                     """
-                    INSERT INTO funding_log 
+                    INSERT INTO funding_log
                     (symbol, funding_rate, next_settlement, mark_price, index_price, basis_pct)
                     VALUES ($1, $2, $3, $4, $5, $6)
                     """,

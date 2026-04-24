@@ -5,32 +5,19 @@ Evaluates all signal conditions and generates trade signals.
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone, timedelta
-from enum import Enum
-from typing import Any, Dict, List, Optional
+from datetime import datetime, timezone
+from typing import Any, Dict, Optional
 
 from src.config_loader import Config
 from src.strategy.funding_scanner import FundingSignal
+from src.constants import SignalSide, ExitReason, ScoringWeights, DefaultParams, FilterDefaults
+
+# Import PositionSizer with TYPE_CHECKING to avoid circular import
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from src.risk.position_sizer import PositionSizer
 
 logger = logging.getLogger(__name__)
-
-
-class SignalSide(Enum):
-    """Trade side enumeration."""
-    LONG = "LONG"
-    SHORT = "SHORT"
-    NONE = "NONE"
-
-
-class ExitReason(Enum):
-    """Exit reason enumeration."""
-    TAKE_PROFIT = "TP"
-    STOP_LOSS = "SL"
-    TRAILING_STOP = "TRAIL"
-    TIME_BASED = "TIME"
-    MANUAL = "MANUAL"
-    VOLATILITY_SPIKE = "VOLATILITY"
-    FUNDING_REVERSAL = "FUNDING_REV"
 
 
 @dataclass
@@ -52,6 +39,7 @@ class EntrySignal:
     ob_imbalance: float
     minutes_to_funding: int
     r_ratio: float
+    score: float = 0.0  # Quality score for ranking signals (0-100)
 
 
 class SignalEngine:
@@ -64,6 +52,12 @@ class SignalEngine:
     - Volatility filter
     - Basis filter
     - Order book imbalance
+
+    Features:
+    - Multi-pair scanning with signal scoring
+    - Selects best signal based on weighted scoring system
+    - Supports leverage up to 20x with $1 capital
+    - Only 1 active trade at a time
     """
 
     def __init__(self, config: Config):
@@ -75,52 +69,52 @@ class SignalEngine:
         """
         self.config = config
 
-        # Strategy parameters
+        # Strategy parameters - use constants as defaults
         self.funding_threshold = config.get(
-            "strategy", "funding_threshold_pct", default=0.03
+            "strategy", "funding_threshold_pct", default=DefaultParams.FUNDING_THRESHOLD_PCT
         ) / 100.0
         self.entry_window_start = config.get(
-            "strategy", "entry_window_start_min", default=15
+            "strategy", "entry_window_start_min", default=DefaultParams.ENTRY_WINDOW_START_MIN
         )
         self.entry_window_end = config.get(
-            "strategy", "entry_window_end_min", default=10
+            "strategy", "entry_window_end_min", default=DefaultParams.ENTRY_WINDOW_END_MIN
         )
 
-        # Filter parameters
+        # Filter parameters - use constants as defaults
         self.atr_multiplier_limit = config.get(
-            "filters", "atr_multiplier_limit", default=2.0
+            "filters", "atr_multiplier_limit", default=FilterDefaults.ATR_MULTIPLIER_LIMIT
         )
         self.max_1h_price_change = config.get(
-            "filters", "max_1h_price_change_pct", default=2.0
+            "filters", "max_1h_price_change_pct", default=FilterDefaults.MAX_1H_PRICE_CHANGE_PCT
         ) / 100.0
         self.max_spread_multiplier = config.get(
-            "filters", "max_spread_multiplier", default=3.0
+            "filters", "max_spread_multiplier", default=FilterDefaults.MAX_SPREAD_MULTIPLIER
         )
         self.max_basis_pct = config.get(
-            "filters", "max_basis_pct", default=0.30
+            "filters", "max_basis_pct", default=FilterDefaults.MAX_BASIS_PCT
         ) / 100.0
         self.ob_imbalance_enabled = config.get(
-            "filters", "ob_imbalance_enabled", default=True
+            "filters", "ob_imbalance_enabled", default=FilterDefaults.OB_IMBALANCE_ENABLED
         )
         self.ob_short_threshold = config.get(
-            "filters", "ob_imbalance_short_threshold", default=0.8
+            "filters", "ob_imbalance_short_threshold", default=FilterDefaults.OB_SHORT_THRESHOLD
         )
         self.ob_long_threshold = config.get(
-            "filters", "ob_imbalance_long_threshold", default=1.2
+            "filters", "ob_imbalance_long_threshold", default=FilterDefaults.OB_LONG_THRESHOLD
         )
 
-        # Risk parameters
+        # Risk parameters - use constants as defaults
         self.risk_per_trade = config.get(
-            "risk", "risk_per_trade_pct", default=1.0
+            "risk", "risk_per_trade_pct", default=DefaultParams.RISK_PER_TRADE_PCT
         ) / 100.0
-        self.max_leverage = config.get("risk", "max_leverage", default=5)
+        self.max_leverage = config.get("risk", "max_leverage", default=DefaultParams.MAX_LEVERAGE)
         self.take_profit_pct = config.get(
-            "risk", "take_profit_pct", default=0.30
+            "risk", "take_profit_pct", default=DefaultParams.TAKE_PROFIT_PCT
         ) / 100.0
         self.stop_loss_pct = config.get(
-            "risk", "stop_loss_pct", default=0.20
+            "risk", "stop_loss_pct", default=DefaultParams.STOP_LOSS_PCT
         ) / 100.0
-        self.min_rr_ratio = config.get("risk", "min_rr_ratio", default=1.3)
+        self.min_rr_ratio = config.get("risk", "min_rr_ratio", default=DefaultParams.MIN_RR_RATIO)
 
     def check_time_window(self, minutes_to_funding: int) -> bool:
         """
@@ -330,11 +324,82 @@ class SignalEngine:
 
         return reward / risk
 
+    def calculate_signal_score(
+        self,
+        funding_rate: float,
+        r_ratio: float,
+        minutes_to_funding: int,
+        spread_pct: float,
+        ob_ratio: float,
+        side: SignalSide,
+    ) -> float:
+        """
+        Calculate a quality score for ranking signals.
+
+        Higher score = better signal quality.
+
+        Scoring factors (using ScoringWeights constants):
+        - Funding rate magnitude (higher = better) - max {ScoringWeights.FUNDING_RATE} points
+        - Risk-reward ratio (higher = better) - max {ScoringWeights.R_RATIO} points
+        - Time to funding (closer to optimal window = better) - max {ScoringWeights.TIMING} points
+        - Spread (lower = better) - max {ScoringWeights.SPREAD} points
+        - Order book imbalance confirmation (stronger = better) - max {ScoringWeights.OB_IMBALANCE} points
+
+        Args:
+            funding_rate: Current funding rate.
+            r_ratio: Risk-reward ratio.
+            minutes_to_funding: Minutes until funding settlement.
+            spread_pct: Current spread percentage.
+            ob_ratio: Order book imbalance ratio.
+            side: Trade side.
+
+        Returns:
+            Quality score (0-100 scale).
+        """
+        # 1. Funding rate score (0-FUNDING_RATE points)
+        # Higher absolute funding rate = more profit potential
+        funding_score = min(abs(funding_rate) * 1000, ScoringWeights.FUNDING_RATE)
+
+        # 2. R:R ratio score (0-R_RATIO points)
+        # Higher R:R = better risk management
+        rr_score = min(max((r_ratio - 1.0) * 10, 0), ScoringWeights.R_RATIO)
+
+        # 3. Timing score (0-TIMING points)
+        # Optimal: 12-13 minutes before funding (middle of 10-15 window)
+        optimal_time = 12.5
+        time_diff = abs(minutes_to_funding - optimal_time)
+        timing_score = max(ScoringWeights.TIMING - (time_diff * 2), 0)
+
+        # 4. Spread score (0-SPREAD points)
+        # Lower spread = better execution
+        spread_score = max(ScoringWeights.SPREAD - (spread_pct * 100), 0)
+
+        # 5. OB imbalance score (0-OB_IMBALANCE points)
+        # Stronger imbalance = better confirmation
+        if side == SignalSide.SHORT:
+            # For SHORT: lower ob_ratio is better (more asks)
+            ob_score = min((self.ob_short_threshold - ob_ratio) * 20, ScoringWeights.OB_IMBALANCE)
+        else:  # LONG
+            # For LONG: higher ob_ratio is better (more bids)
+            ob_score = min((ob_ratio - self.ob_long_threshold) * 20, ScoringWeights.OB_IMBALANCE)
+        ob_score = max(ob_score, 0)
+
+        total_score = funding_score + rr_score + timing_score + spread_score + ob_score
+
+        logger.debug(
+            f"Signal score breakdown: funding={funding_score:.1f}, "
+            f"rr={rr_score:.1f}, timing={timing_score:.1f}, "
+            f"spread={spread_score:.1f}, ob={ob_score:.1f} => {total_score:.1f}"
+        )
+
+        return total_score
+
     def evaluate_signal(
         self,
         signal_data: FundingSignal,
         market_data: Dict[str, Any],
         equity: float,
+        position_sizer: "PositionSizer",
     ) -> Optional[EntrySignal]:
         """
         Evaluate all conditions and generate entry signal if valid.
@@ -396,16 +461,29 @@ class SignalEngine:
             )
             return None
 
-        # Calculate position size
-        sl_distance_pct = abs((sl_price - entry_price) / entry_price)
-        if sl_distance_pct > 0:
-            risk_amount = equity * self.risk_per_trade
-            position_size = risk_amount / (entry_price * sl_distance_pct)
-        else:
-            position_size = 0
+        # Calculate signal quality score for ranking
+        signal_score = self.calculate_signal_score(
+            funding_rate=funding_rate,
+            r_ratio=r_ratio,
+            minutes_to_funding=minutes_to_funding,
+            spread_pct=spread_pct,
+            ob_ratio=ob_ratio,
+            side=side,
+        )
 
-        # Apply leverage limit
-        leverage = min(self.max_leverage, 5)
+        # Calculate position size using PositionSizer
+        position_size = position_sizer.calculate_position_size(
+            symbol=symbol,
+            entry_price=entry_price,
+            equity=equity,
+        )
+
+        if position_size is None or position_size <= 0:
+            logger.warning(f"Invalid position size for {symbol}")
+            return None
+
+        # Apply leverage limit (use config max_leverage, not hardcoded)
+        leverage = self.max_leverage
 
         entry_signal = EntrySignal(
             symbol=symbol,
@@ -423,12 +501,13 @@ class SignalEngine:
             ob_imbalance=ob_ratio,
             minutes_to_funding=minutes_to_funding,
             r_ratio=r_ratio,
+            score=signal_score,
         )
 
         logger.info(
             f"✓ Valid entry signal: {symbol} {side.value} | "
             f"Entry: ${entry_price:.4f} | TP: ${tp_price:.4f} | "
-            f"SL: ${sl_price:.4f} | R:R: {r_ratio:.2f}"
+            f"SL: ${sl_price:.4f} | R:R: {r_ratio:.2f} | Score: {signal_score:.1f}"
         )
 
         return entry_signal

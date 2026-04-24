@@ -193,6 +193,49 @@ class BinanceRESTClient:
         params = {"symbol": symbol, "interval": interval, "limit": limit}
         return await self._request("GET", endpoint, params)
 
+    async def get_exchange_info(self) -> Dict[str, Any]:
+        """
+        Get exchange info including symbol filters.
+
+        Returns:
+            Exchange info with symbols, filters (stepSize, minQty, minNotional).
+        """
+        endpoint = "/fapi/v1/exchangeInfo"
+        return await self._request("GET", endpoint)
+
+    def get_symbol_filters(self, symbol: str, exchange_info: Dict[str, Any]) -> Optional[Dict[str, str]]:
+        """
+        Get trading filters for a specific symbol.
+
+        Args:
+            symbol: Trading pair symbol.
+            exchange_info: Exchange info from get_exchange_info().
+
+        Returns:
+            Dictionary with stepSize, minQty, minNotional or None if not found.
+        """
+        for sym_info in exchange_info.get("symbols", []):
+            if sym_info.get("symbol") == symbol:
+                filters = sym_info.get("filters", [])
+                result = {}
+                for f in filters:
+                    if f.get("filterType") == "LOT_SIZE":
+                        result["stepSize"] = f.get("stepSize", "0.001")
+                        result["minQty"] = f.get("minQty", "0.001")
+                    elif f.get("filterType") == "NOTIONAL":
+                        result["minNotional"] = f.get("notional", "5.0")
+
+                # Default values if not found
+                if "stepSize" not in result:
+                    result["stepSize"] = "0.001"
+                if "minQty" not in result:
+                    result["minQty"] = "0.001"
+                if "minNotional" not in result:
+                    result["minNotional"] = "5.0"
+
+                return result
+        return None
+
     async def place_order(
         self,
         symbol: str,
@@ -234,7 +277,6 @@ class BinanceRESTClient:
             params["newClientOrderId"] = client_order_id
         else:
             import time
-
             params["newClientOrderId"] = f"bot_{int(time.time() * 1000)}"
 
         return await self._request("POST", endpoint, params, signed=True)

@@ -9,6 +9,7 @@ from typing import Any, Dict, Optional
 import aiohttp
 from src.config_loader import Config
 from src.strategy.signal_engine import EntrySignal
+from src.constants import SignalSide, ExitReason
 
 logger = logging.getLogger(__name__)
 

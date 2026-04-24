@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
-from src.strategy.signal_engine import EntrySignal, ExitReason, SignalSide
+from src.constants import SignalSide, ExitReason, TimeConstants
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +115,15 @@ class PositionTracker:
             True if symbol has an open position.
         """
         return symbol in self.positions
+
+    def get_open_position_count(self) -> int:
+        """
+        Get the number of open positions.
+
+        Returns:
+            Number of open positions.
+        """
+        return len(self.positions)
 
     def calculate_pnl(self, position: Position, current_price: float) -> float:
         """
@@ -240,8 +249,8 @@ class PositionTracker:
                     return ExitReason.TRAILING_STOP
 
         # Check time-based exit (15 minutes after settlement)
-        elapsed_minutes = (datetime.now(timezone.utc) - position.entry_time).total_seconds() / 60
-        if elapsed_minutes >= 30:  # Hard exit after 30 minutes
+        elapsed_minutes = (datetime.now(timezone.utc) - position.entry_time).total_seconds() / TimeConstants.SECONDS_PER_MINUTE
+        if elapsed_minutes >= TimeConstants.HARD_EXIT_AFTER_MINUTES:  # Hard exit after 30 minutes
             logger.info(f"Time-based exit for {position.symbol} ({elapsed_minutes:.0f} min)")
             return ExitReason.TIME_BASED
 

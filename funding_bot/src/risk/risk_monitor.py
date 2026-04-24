@@ -79,31 +79,32 @@ class RiskMonitor:
 
         # Check session drawdown
         if self.starting_equity > 0:
-            drawdown = (self.starting_equity - self.current_equity) / self.starting_equity
-            if drawdown >= self.session_drawdown_limit_pct:
-                self.trigger_halt("Session drawdown limit reached")
+            session_drawdown = (self.starting_equity - equity) / self.starting_equity
+            if session_drawdown >= self.session_drawdown_limit_pct:
+                self.trigger_halt(
+                    f"Session drawdown limit reached ({session_drawdown * 100:.2f}%)"
+                )
 
     def record_trade_entry(self, signal: EntrySignal):
         """
-        Record a trade entry.
+        Record a new trade entry.
 
         Args:
-            signal: Entry signal that was executed.
+            signal: Entry signal.
         """
-        if not self.can_enter_trade():
-            logger.warning("Trade entry recorded but risk limits may be exceeded")
-
-        logger.info(
-            f"Trade entry recorded: {signal.symbol} {signal.side.value} | "
-            f"Size: {signal.position_size}"
-        )
+        self.trade_history.append({
+            "symbol": signal.symbol,
+            "entry_time": signal.timestamp,
+            "open": True,
+        })
+        logger.debug(f"Trade entry recorded for {signal.symbol}")
 
     def record_trade_exit(self, pnl: float):
         """
-        Record a trade exit.
+        Record a trade exit and update risk metrics.
 
         Args:
-            pnl: Realized PnL from the trade.
+            pnl: Realized PnL for the trade.
         """
         self.daily_pnl += pnl
         self.trades_today += 1

@@ -8,22 +8,23 @@ strategy:
   entry_window_start_min: 15         # minutes before settlement
   entry_window_end_min: 10           # minutes before settlement
   hard_exit_after_min: 15            # minutes after settlement
-  max_concurrent_trades: 3
-  top_pairs_to_scan: 10
+  max_concurrent_trades: 1           # ONLY 1 ACTIVE TRADE AT A TIME
+  top_pairs_to_scan: 50              # Scan more pairs to find the best signal
   min_volume_24h_usdt: 50000000      # $50M minimum liquidity
 
 risk:
-  risk_per_trade_pct: 1.0            # % of equity risked per trade
-  max_leverage: 5
+  capital: 1.0                       # Starting capital in USDT ($1)
+  risk_per_trade_pct: 100.0          # Use full capital for each trade (since only 1 trade)
+  max_leverage: 20                   # 20x leverage
   take_profit_pct: 0.30
   stop_loss_pct: 0.20
   min_rr_ratio: 1.3
   trailing_stop_activation_pct: 0.15
   trailing_stop_distance_pct: 0.10
-  daily_max_loss_pct: 3.0
-  session_drawdown_limit_pct: 5.0
-  consecutive_loss_limit: 3
-  margin_buffer_pct: 60.0            # minimum margin to maintain
+  daily_max_loss_pct: 50.0           # Higher tolerance for small capital
+  session_drawdown_limit_pct: 50.0
+  consecutive_loss_limit: 5
+  margin_buffer_pct: 10.0            # Lower buffer for small capital
 
 filters:
   atr_multiplier_limit: 2.0          # skip if ATR > 2x 30d average

@@ -61,11 +61,13 @@ def test_record_trade_exit_loss(risk_monitor):
 
 def test_consecutive_loss_halt(risk_monitor):
     """Test trading halt after consecutive losses."""
-    # Record 3 consecutive losses (default limit)
+    # Record 5 consecutive losses (new config limit = 5)
     risk_monitor.record_trade_exit(-10.0)
     risk_monitor.record_trade_exit(-10.0)
     risk_monitor.record_trade_exit(-10.0)
-    
+    risk_monitor.record_trade_exit(-10.0)
+    risk_monitor.record_trade_exit(-10.0)
+
     assert risk_monitor.is_halted is True
     assert risk_monitor.can_enter_trade() is False
 
@@ -73,10 +75,10 @@ def test_consecutive_loss_halt(risk_monitor):
 def test_daily_loss_halt(risk_monitor):
     """Test trading halt after daily loss limit."""
     risk_monitor.update_equity(1000.0)
-    
-    # Record losses totaling > 3% (default daily max loss)
-    risk_monitor.record_trade_exit(-35.0)  # 3.5% loss
-    
+
+    # Record losses totaling > 50% (new config daily_max_loss_pct = 50.0)
+    risk_monitor.record_trade_exit(-600.0)  # 60% loss
+
     assert risk_monitor.is_halted is True
     assert risk_monitor.can_enter_trade() is False
 

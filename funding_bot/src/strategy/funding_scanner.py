@@ -4,6 +4,7 @@ Scans all Binance USDT-margined perpetual pairs and ranks them by signal strengt
 """
 
 import logging
+import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -151,14 +152,14 @@ class FundingScanner:
         signals = []
 
         # Scan symbols with concurrency limit
-        semaphore = __import__("asyncio").Semaphore(10)
+        semaphore = asyncio.Semaphore(10)
 
         async def scan_with_semaphore(sym: str) -> Optional[FundingSignal]:
             async with semaphore:
                 return await self.scan_symbol(sym)
 
         tasks = [scan_with_semaphore(symbol) for symbol in symbols]
-        results = await __import__("asyncio").gather(*tasks, return_exceptions=True)
+        results = await asyncio.gather(*tasks, return_exceptions=True)
 
         for result in results:
             if isinstance(result, FundingSignal):

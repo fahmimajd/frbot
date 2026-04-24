@@ -7,8 +7,13 @@ import asyncio
 import json
 import logging
 from typing import Any, Callable, Dict, List, Optional
+import warnings
 
 import websockets
+
+# Suppress deprecated legacy module warnings from websockets internals
+warnings.filterwarnings("ignore", message=".*websockets.legacy.*", category=DeprecationWarning)
+
 from src.config_loader import Config
 
 logger = logging.getLogger(__name__)
@@ -31,7 +36,7 @@ class BinanceWebSocketManager:
         if self.testnet:
             self.ws_url = "wss://stream.binancefuture.com"
 
-        self._streams: Dict[str, websockets.WebSocketClientProtocol] = {}
+        self._streams: Dict[str, websockets.ClientProtocol] = {}
         self._callbacks: Dict[str, Callable] = {}
         self._running = False
         self._reconnect_attempts: Dict[str, int] = {}
@@ -169,7 +174,7 @@ class BinanceWebSocketManager:
         except Exception as e:
             logger.error(f"Error in callback: {e}")
 
-    def get_stream(self, stream_name: str) -> Optional[websockets.WebSocketClientProtocol]:
+    def get_stream(self, stream_name: str) -> Optional[websockets.ClientProtocol]:
         """
         Get an active WebSocket stream.
 

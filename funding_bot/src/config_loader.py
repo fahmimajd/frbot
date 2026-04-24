@@ -146,8 +146,8 @@ class Config:
                 "Entry window start must be greater than entry window end"
             )
 
-        if self.get("risk", "max_leverage") > 5:
-            raise ValueError("Maximum leverage cannot exceed 5x")
+        if self.get("risk", "max_leverage") > 20:
+            raise ValueError("Maximum leverage cannot exceed 20x")
 
         return True
 

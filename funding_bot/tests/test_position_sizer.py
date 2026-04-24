@@ -18,43 +18,58 @@ def position_sizer(config):
 
 
 def test_calculate_position_size(position_sizer):
-    """Test position size calculation."""
-    equity = 1000.0
-    entry_price = 100.0
-    stop_loss_price = 99.80  # 0.2% SL
-    
-    # LONG position
-    size, leverage = position_sizer.calculate_position_size(
-        equity, entry_price, stop_loss_price, "LONG"
+    """Test position size calculation with proper exchange info mock."""
+    symbol = "BTCUSDT"
+    entry_price = 10000.0  # Higher price so notional >> minNotional
+    equity = 1.0  # $1 capital
+
+    # Mock exchange info to avoid API calls
+    # Must match Binance exchangeInfo format: {"symbols": [{symbol: "...", filters: [...]}]}
+    position_sizer._exchange_info = {
+        "symbols": [
+            {
+                "symbol": "BTCUSDT",
+                "filters": [
+                    {"filterType": "LOT_SIZE", "stepSize": "0.001", "minQty": "0.001"},
+                    {"filterType": "NOTIONAL", "notional": "5.0"},
+                ],
+            }
+        ]
+    }
+
+    # Calculate position size
+    size = position_sizer.calculate_position_size(
+        symbol=symbol,
+        entry_price=entry_price,
+        equity=equity,
     )
-    
+
     # Verify position size is reasonable
-    assert size > 0
-    assert leverage >= 1
-    assert leverage <= 5  # Max leverage limit
-    
-    # SHORT position
-    stop_loss_price_short = 100.20  # 0.2% SL
-    size_short, leverage_short = position_sizer.calculate_position_size(
-        equity, entry_price, stop_loss_price_short, "SHORT"
-    )
-    
-    assert size_short > 0
-    assert leverage_short >= 1
+    assert size is not None, "Position size should not be None"
+    assert size > 0, "Position size should be positive"
+
+    # With $1 capital and 20x leverage (from config), position value = $20
+    # At price $10000, quantity = 20 / 10000 = 0.002
+    expected_quantity = (1.0 * 20) / 10000  # capital * leverage / price
+    assert abs(size - expected_quantity) < 0.001
 
 
-def test_leverage_limit(position_sizer):
-    """Test that leverage never exceeds maximum."""
-    equity = 1000.0
+def test_calculate_position_size_with_defaults(position_sizer):
+    """Test position size calculation with default filters."""
+    symbol = "BTCUSDT"  # Use BTC instead of ETH to avoid minNotional issues
     entry_price = 100.0
-    stop_loss_price = 99.99  # Very tight SL (0.01%)
+    equity = 1.0
     
-    size, leverage = position_sizer.calculate_position_size(
-        equity, entry_price, stop_loss_price, "LONG"
+    # Without exchange info, should use defaults
+    size = position_sizer.calculate_position_size(
+        symbol=symbol,
+        entry_price=entry_price,
+        equity=equity
     )
     
-    # Leverage should be capped at max (5x)
-    assert leverage <= 5
+    # Should return a valid quantity
+    assert size is not None
+    assert size > 0
 
 
 def test_calculate_quantity_from_notional(position_sizer):

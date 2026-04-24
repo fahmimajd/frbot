@@ -15,7 +15,8 @@ from src.exchange.binance_rest import BinanceRESTClient
 from src.exchange.binance_ws import BinanceWebSocketManager
 from src.exchange.rate_limiter import RateLimiter
 from src.strategy.funding_scanner import FundingScanner, FundingSignal
-from src.strategy.signal_engine import SignalEngine, EntrySignal, SignalSide
+from src.strategy.signal_engine import SignalEngine, EntrySignal
+from src.constants import SignalSide
 from src.risk.pre_trade_check import PreTradeChecker
 from src.risk.position_sizer import PositionSizer
 from src.risk.risk_monitor import RiskMonitor
@@ -95,10 +96,14 @@ class FundingBot:
             logger.info(f"Account equity: ${self.equity:,.2f}")
         except Exception as e:
             logger.error(f"Failed to get account info: {e}")
-            self.equity = 1000.0  # Default for paper trading
+            self.equity = self.config.get("risk", "capital", default=1.0)  # Use config capital
 
         # Initialize risk monitor with current equity
         self.risk_monitor.update_equity(self.equity)
+
+        # Initialize position sizer with exchange info
+        self.position_sizer.set_rest_client(self.rest_client)
+        await self.position_sizer.load_exchange_info(self.rest_client)
 
         logger.info("Funding bot initialized successfully")
 
@@ -134,15 +139,23 @@ class FundingBot:
 
             # Get top signals
             top_signals = await self.scanner.get_top_signals(
-                top_n=self.config.get("strategy", "top_pairs_to_scan", default=10)
+                top_n=self.config.get("strategy", "top_pairs_to_scan", default=50)
             )
 
             # Filter by funding threshold
             qualified_signals = self.scanner.filter_by_threshold(top_signals)
 
-            # Evaluate each signal
-            for signal_data in qualified_signals[:3]:  # Max 3 concurrent trades
-                # Check if already trading this symbol
+            # Check if we already have an active trade (only 1 trade allowed)
+            max_trades = self.config.get("strategy", "max_concurrent_trades", default=1)
+            if self.position_tracker.get_open_position_count() >= max_trades:
+                logger.info(f"Already have {max_trades} active trade(s), skipping new entries")
+                return
+
+            # Evaluate ALL qualified signals and collect valid ones
+            valid_signals = []
+
+            for signal_data in qualified_signals:
+                # Skip if already trading this symbol
                 if self.position_tracker.is_trading_symbol(signal_data.symbol):
                     logger.debug(f"Already trading {signal_data.symbol}, skipping")
                     continue
@@ -155,14 +168,38 @@ class FundingBot:
 
                 # Evaluate signal
                 entry_signal = self.signal_engine.evaluate_signal(
-                    signal_data, market_data, self.equity
+                    signal_data, market_data, self.equity, self.position_sizer
                 )
 
                 if entry_signal:
-                    # Final pre-trade check
-                    if await self.pre_trade_checker.final_check(entry_signal):
-                        self.active_signals.append(entry_signal)
-                        await self.execute_entry(entry_signal)
+                    valid_signals.append(entry_signal)
+                    logger.info(
+                        f"Valid signal found: {entry_signal.symbol} | "
+                        f"Side: {entry_signal.side.value} | Score: {entry_signal.score:.1f}"
+                    )
+
+            # Select the BEST signal (highest score) if any valid signals exist
+            if valid_signals:
+                # Sort by score descending
+                valid_signals.sort(key=lambda x: x.score, reverse=True)
+                best_signal = valid_signals[0]
+
+                logger.info(
+                    f"🎯 Selected BEST signal from {len(valid_signals)} candidates: "
+                    f"{best_signal.symbol} {best_signal.side.value} | "
+                    f"Score: {best_signal.score:.1f} | "
+                    f"Funding: {best_signal.funding_rate*100:.4f}% | "
+                    f"R:R: {best_signal.r_ratio:.2f}"
+                )
+
+                # Final pre-trade check for the best signal only
+                if await self.pre_trade_checker.final_check(best_signal):
+                    self.active_signals.append(best_signal)
+                    await self.execute_entry(best_signal)
+                else:
+                    logger.warning(f"Final pre-trade check failed for best signal: {best_signal.symbol}")
+            else:
+                logger.info("No valid signals found in this scan cycle")
 
         except Exception as e:
             logger.error(f"Error in scan cycle: {e}", exc_info=True)
